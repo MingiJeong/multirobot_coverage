@@ -11,86 +11,102 @@ from geometry_msgs.msg import Pose
 from nav_msgs.msg import OccupancyGrid
 
 from node import Node
+import param
+
+COSTMAP_OCCUPANCY_VAL = param.COSTMAP_OCCUPANCY_VAL
+DEFAULT_COSTMAP_TOPIC = param.DEFAULT_COSTMAP_TOPIC
+COSTMAP_USE = param.COSTMAP_USE
 
 
 class Graph:
-  """Graph class
-  """
+    """Graph class"""
 
-  def __init__(self, map_service, resize=100):
-    """Constructor
+    def __init__(self, map_service, resize=100):
+        """Constructor
 
-    Args:
-      map_service (str): Map service name
-    """
-    # Occupancy grid map
-    self.grid_map = None
-    # Graph size
-    self.height = 0
-    self.width = 0
-    self.resolution = 0
-    self.resize = resize
-    self.origin = Pose()
-    # Nodes of the graph
-    self.nodes = None
-    self.occ_grid = None
-    self.map_srv = rospy.ServiceProxy(map_service, GetMap)
-    self.map_info = None
-    resp = self.map_srv.call()
-    
-    # Create Graph
-    self.create_graph(resp.map)
+        Args:
+          map_service (str): Map service name
+        """
+        # Occupancy grid map
+        self.grid_map = None
+        # Graph size
+        self.height = 0
+        self.width = 0
+        self.resolution = 0
+        self.resize = resize
+        self.origin = Pose()
+        # Nodes of the graph
+        self.nodes = None
+        self.occ_grid = None
 
-
-  def create_graph(self, map_msg):
-    """Create graph from occupancy grid message
-
-    Args:
-      map_msg (OccupancyGrid): OccupancyGrid map
-    """
-    self.height = self.resize
-    self.width = self.resize
-    self.resolution_x = map_msg.info.resolution *  map_msg.info.width / self.resize
-    self.resolution_y = map_msg.info.resolution *  map_msg.info.height / self.resize 
-    self.resolution = map_msg.info.resolution *  map_msg.info.height * map_msg.info.width / (self.resize * self.resize)
-    self.origin = map_msg.info.origin
-    self.map_info = map_msg.info
-    self.occ_grid = np.array(map_msg.data, dtype=np.uint8).reshape((map_msg.info.height, map_msg.info.width))
-    self.occ_grid = self.occ_grid[::-1, :]
-    self.occ_grid = cv2.resize(self.occ_grid, (self.resize, self.resize))
-
-
-    self.nodes = np.empty((self.height, self.width), dtype=object)
-
-    for i in range(self.height):
-      for j in range(self.width):
-        p = Pose()
-        p.position.x = self.resolution_x * j + self.resolution_x / 2.0
-        p.position.y = self.height * self.resolution_y - (self.resolution_y * i + self.resolution_y / 2.0)
-        node = Node(i, j, p)
-        if 0 <= self.occ_grid[i,j] <= 20:
-          node.valid = True
+        #### MJ
+        # we are calling cost map for navigation purpose.
+        if COSTMAP_USE:
+            self.map_msg = rospy.wait_for_message("/robot_0/" + DEFAULT_COSTMAP_TOPIC, OccupancyGrid)  # costmap for navigation
+            self.create_graph(self.map_msg)
         else:
-          node.valid = False
-        self.nodes[i,j] = node
+            # old: calling static map by map server
+            self.map_srv = rospy.ServiceProxy(map_service, GetMap)
+            self.map_info = None
+            resp = self.map_srv.call()
+            self.create_graph(resp.map)  # Create Graph
 
-    for i in range(self.height):
-      for j in range(self.width):
-        if self.nodes[i,j].valid:
-          min_i = max(0, i-1)
-          max_i = min(self.height - 1, i+1) + 1
-          min_j = max(0, j-1)
-          max_j = min(self.width - 1, j+1) + 1
+    def create_graph(self, map_msg):
+        """Create graph from occupancy grid message
 
-          node = self.nodes[i,j]
-          neighbors = self.nodes[min_i:max_i, min_j:max_j].flatten()
-          for n in neighbors:
-            if n != node:
-              if n.valid:
-                self.nodes[i,j].neighbors.append(n)
-              else:
-                self.nodes[i,j].obstacle_neighbors.append(n)
-    """ for i in range(self.height):
+        Args:
+          map_msg (OccupancyGrid): OccupancyGrid map
+        """
+        self.height = self.resize
+        self.width = self.resize
+        self.resolution_x = map_msg.info.resolution * map_msg.info.width / self.resize
+        self.resolution_y = map_msg.info.resolution * map_msg.info.height / self.resize
+        self.resolution = map_msg.info.resolution * map_msg.info.height * map_msg.info.width / (self.resize * self.resize)
+        self.origin = map_msg.info.origin
+        self.map_info = map_msg.info
+        self.occ_grid = np.array(map_msg.data, dtype=np.uint8).reshape((map_msg.info.height, map_msg.info.width))
+        self.occ_grid = self.occ_grid[::-1, :]
+        self.occ_grid = cv2.resize(self.occ_grid, (self.resize, self.resize))
+
+        self.nodes = np.empty((self.height, self.width), dtype=object)
+
+        # each cell to be made as a node
+        for i in range(self.height):
+            for j in range(self.width):
+                p = Pose()
+
+                # origin + needed as it is a starting position
+                # p.position.x = self.resolution_x * j + self.resolution_x / 2.0
+                p.position.x = (self.resolution_x * j + self.resolution_x / 2.0) + self.origin.position.x
+                # p.position.y = self.height * self.resolution_y - (self.resolution_y * i + self.resolution_y / 2.0)
+                p.position.y = self.height * self.resolution_y - (self.resolution_y * i + self.resolution_y / 2.0) + self.origin.position.y
+
+                node = Node(i, j, p)
+                # if 0 <= self.occ_grid[i, j] <= 20: # MJ
+                if 0 <= self.occ_grid[i, j] <= COSTMAP_OCCUPANCY_VAL:
+                    node.valid = True
+                else:
+                    node.valid = False
+                self.nodes[i, j] = node
+
+        # build neighbors
+        for i in range(self.height):
+            for j in range(self.width):
+                if self.nodes[i, j].valid:
+                    min_i = max(0, i - 1)
+                    max_i = min(self.height - 1, i + 1) + 1
+                    min_j = max(0, j - 1)
+                    max_j = min(self.width - 1, j + 1) + 1
+
+                    node = self.nodes[i, j]
+                    neighbors = self.nodes[min_i:max_i, min_j:max_j].flatten()
+                    for n in neighbors:
+                        if n != node:
+                            if n.valid:
+                                self.nodes[i, j].neighbors.append(n)
+                            else:
+                                self.nodes[i, j].obstacle_neighbors.append(n)
+        """ for i in range(self.height):
       for j in range(self.width):
         node = self.nodes[i,j]
         print("****")
@@ -103,52 +119,52 @@ class Graph:
           exit(0)
     exit(0) """
 
+    def get_node(self, pose):
+        """Get node from pose
 
-  def get_node(self, pose):
-    """Get node from pose
+        Args:
+          pose (Pose): Requested pose
 
-    Args:
-      pose (Pose): Requested pose
+        Returns:
+          Node: Node at the given pose if it is available, None otherwise
+        """
+        i, j = self.pose_to_index(pose)
 
-    Returns:
-      Node: Node at the given pose if it is available, None otherwise
-    """
-    i, j = self.pose_to_index(pose)
-    
-    if 0 <= i < self.height and 0 <= j < self.width:
-      #print("Found i:%d j:%d"%(i,j))
-      return self.nodes[i,j]
-    else:
-      #print("Not Found i:%d j:%d"%(i,j))
-      return None
+        if 0 <= i < self.height and 0 <= j < self.width:
+            # print("Found i:%d j:%d"%(i,j))
+            return self.nodes[i, j]
+        else:
+            # print("Not Found i:%d j:%d"%(i,j))
+            return None
 
-  def get_node_from_index(self, i, j):
-    """Get node from pose
+    def get_node_from_index(self, i, j):
+        """Get node from pose
 
-    Args:
-      pose (Pose): Requested pose
+        Args:
+          pose (Pose): Requested pose
 
-    Returns:
-      Node: Node at the given pose if it is available, None otherwise
-    """
-    return self.nodes[i,j]
+        Returns:
+          Node: Node at the given pose if it is available, None otherwise
+        """
+        return self.nodes[i, j]
 
-  def pose_to_index(self, pose):
-    """Get index from pose
+    def pose_to_index(self, pose):
+        """Get index from pose
 
-    Args:
-      pose (Pose): Requested pose
+        Args:
+          pose (Pose): Requested pose
 
-    Returns:
-      tuple(int, int): Index
-    """
-    x = pose.position.x
-    y = pose.position.y
-    x = x - self.origin.position.x
-    y = y - self.origin.position.y
-    height = self.height * self.resolution_y
-    y = height - y
+        Returns:
+          tuple(int, int): Index
+        """
+        x = pose.position.x
+        y = pose.position.y
+        x = x - self.origin.position.x
+        y = y - self.origin.position.y
 
-    i = int(math.floor(y / self.resolution_y))
-    j = int(math.floor(x / self.resolution_x))
-    return (i, j)
+        height = self.height * self.resolution_y
+        y = height - y
+
+        i = int(math.floor(y / self.resolution_y))
+        j = int(math.floor(x / self.resolution_x))
+        return (i, j)
