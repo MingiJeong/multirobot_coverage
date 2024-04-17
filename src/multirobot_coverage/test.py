@@ -187,6 +187,8 @@ class Planner:
                 env_name = "empty"
             elif "shanghai" in self.global_file_name:
                 env_name = "shanghai"
+            elif "new_office" in self.global_file_name:
+                env_name = "new_office"
             env_no = get_number_interested("env_", self.global_file_name)
             agent_no = get_number_interested("an_", self.global_file_name)
 
